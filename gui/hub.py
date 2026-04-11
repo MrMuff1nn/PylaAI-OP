@@ -3,11 +3,9 @@ import sys
 import customtkinter as ctk
 import webbrowser
 import os
-import time
 import pyautogui
 from PIL import Image
 import tkinter as tk
-import bettercam
 from utils import load_toml_as_dict, save_dict_as_toml, get_discord_link, get_dpi_scale
 from packaging import version
 
@@ -113,7 +111,7 @@ class Hub:
         self.tabview = ctk.CTkTabview(
             self.app,
             width=S(980),
-            height=S(640),
+            height=S(730),
             corner_radius=S(10)
         )
         self.tabview.pack(pady=S(10), padx=S(10), fill="x", expand=False)
@@ -363,7 +361,7 @@ class Hub:
             self.gm3_frame, "brawlball", "Brawlball", orientation=3
         )
         self.rb_showdown_3 = create_gamemode_button(
-            self.gm3_frame, "showdown", "Showdown (Disabled)", disabled=True, orientation=3
+            self.gm3_frame, "showdown", "Showdown (Not Implemented yet)", disabled=True, orientation=3
         )
         self.rb_other_3 = create_gamemode_button(
             self.gm3_frame, "other", "Other", orientation=3
@@ -512,7 +510,7 @@ class Hub:
         # -----------------------------------------------------------------
         start_button = ctk.CTkButton(
             container,
-            text="Start",
+            text="Next",
             fg_color="#c0392b",
             hover_color="#e74c3c",
             font=("Arial", S(24), "bold"),

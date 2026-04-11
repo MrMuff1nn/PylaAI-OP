@@ -1,18 +1,10 @@
 import atexit
-import ctypes
 import math
 import threading
 import time
 import cv2
-import numpy as np
-import win32gui
-import win32con
-import win32ui
-import pyautogui
-from PIL import Image
 from typing import List
 
-# New libraries
 import scrcpy
 from adbutils import adb
 
@@ -25,8 +17,9 @@ key_coords_dict = {
     "H": (1400, 990),
     "G": (1640, 990),
     "M": (1725, 800),
-    "Q": (1740, 1000),
-    "E": (1510, 880)
+    "Q": (1660, 980),
+    "E": (1510, 880),
+    "F": (1360, 920),
 }
 
 directions_xy_deltas_dict = {
@@ -36,7 +29,7 @@ directions_xy_deltas_dict = {
     "d": (150, 0),
 }
 
-BRAWL_STARS_PACKAGE = "com.supercell.brawlstars"
+BRAWL_STARS_PACKAGE = load_toml_as_dict("cfg/general_config.toml")["brawl_stars_package"]
 
 
 class WindowController:
@@ -55,7 +48,7 @@ class WindowController:
             device_list = adb.device_list()
             if not device_list:
                 # Try connecting to common ports if empty
-                for port in [5555, load_toml_as_dict("cfg/general_config.toml")["emulator_port"], 16384, 5635] + list(range(5565, 5756, 10)):
+                for port in [load_toml_as_dict("cfg/general_config.toml")["emulator_port"], 5555, 16384, 5635] + list(range(5565, 5756, 10)):
                     try:
                          adb.connect(f"127.0.0.1:{port}")
                     except Exception:
@@ -73,10 +66,11 @@ class WindowController:
             self.last_frame = None
             self.last_frame_time = 0.0
             self.last_joystick_pos = (None, None)
-            self.FRAME_STALE_TIMEOUT = 5.0
+            self.FRAME_STALE_TIMEOUT = 15.0
 
             def on_frame(frame):
                 if frame is not None:
+                    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                     with self.frame_lock:
                         self.last_frame = frame
                         self.last_frame_time = time.time()
@@ -98,13 +92,22 @@ class WindowController:
         with self.frame_lock:
             if self.last_frame is None:
                 return None, 0.0
-            return self.last_frame.copy(), self.last_frame_time
+            return self.last_frame, self.last_frame_time
 
-    def screenshot(self, array=False):
+    def restart_brawl_stars(self):
+        self.device.app_stop(BRAWL_STARS_PACKAGE)
+        time.sleep(1)
+        self.device.app_start(BRAWL_STARS_PACKAGE)
+        time.sleep(3)
+        self.time_since_checked_if_brawl_stars_crashed = time.time()
+        print("Brawl stars restarted successfully.")
+
+    def screenshot(self):
         c_time = time.time()
         if c_time - self.time_since_checked_if_brawl_stars_crashed > self.check_if_brawl_stars_crashed_timer:
-            if self.device.app_current().package != BRAWL_STARS_PACKAGE:
-                print("Brawl stars has crashed ! Restarting...")
+            opened_app = self.device.app_current().package.strip()
+            if opened_app != BRAWL_STARS_PACKAGE.strip():
+                print(f"Brawl stars has crashed, {opened_app} is the app opened ! Restarting...")
                 self.device.app_start(BRAWL_STARS_PACKAGE)
                 time.sleep(3)
                 self.time_since_checked_if_brawl_stars_crashed = time.time()
@@ -127,20 +130,18 @@ class WindowController:
         if frame_time > 0 and age > self.FRAME_STALE_TIMEOUT:
             print(f"WARNING: scrcpy frame is {age:.1f}s stale -- feed may be frozen")
 
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
         if not self.width or not self.height:
             self.width = frame.shape[1]
             self.height = frame.shape[0]
+            if (self.width, self.height) != (brawl_stars_width, brawl_stars_height):
+                print(f"⚠️⚠️⚠️Unexpected resolution: {self.width}x{self.height}. Expected {brawl_stars_width}x{brawl_stars_height}. Please set your emulator resolution to 1920x1080 for best results.")
             self.width_ratio = self.width / brawl_stars_width
             self.height_ratio = self.height / brawl_stars_height
             self.joystick_x, self.joystick_y = 220 * self.width_ratio, 870 * self.height_ratio
             self.scale_factor = min(self.width_ratio, self.height_ratio)
 
-        if array:
-            return frame_rgb
-
-        return Image.fromarray(frame_rgb)
-
+        return frame
     def touch_down(self, x, y, pointer_id=0):
         # We explicitly pass the pointer_id
         self.scrcpy_client.control.touch(int(x), int(y), scrcpy.ACTION_DOWN, pointer_id)
