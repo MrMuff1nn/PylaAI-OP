@@ -3,7 +3,6 @@
 *.pyc
 cfg/match_history.toml
 latest_brawler_data.json
-cfg/match_history.toml
 test.py
 /debug_frames
 logs/
