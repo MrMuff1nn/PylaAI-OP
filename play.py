@@ -404,6 +404,30 @@ class Play(Movement):
         self._fog_mask_cache_value = None
         self._fog_mask_cache_origin = None
 
+        # Player disambiguation: the model occasionally mislabels an enemy as
+        # the "player" class. We enforce at most one player per frame by
+        # tracking a temporal anchor (last accepted player position) and, when
+        # multiple player-boxes appear, keeping the one closest to the anchor.
+        # Remaining player-boxes are reassigned to "enemy".
+        self._player_anchor_pos = None
+        self._player_anchor_time = 0.0
+        # Tight radius: a box this close to the anchor is accepted as the
+        # same character frame-over-frame. Roughly the sprite size plus one
+        # normal movement step. Enemies standing next to us can also fall
+        # inside this radius, but at that range the anchor self-heals on the
+        # next frame as long as our own box is detected too.
+        self._player_accept_radius_px = 180
+        # Hard cap: if the best candidate is farther than this from the
+        # anchor, the anchor is considered stale/wrong and gets dropped so
+        # the center fallback re-acquires.
+        self._player_max_jump_px = 350
+        # After this many seconds without a confirmed player, drop the anchor
+        # and fall back to the center heuristic on the next frame.
+        self._player_anchor_stale_sec = 1.5
+        # Fallback (no anchor): our character stays inside this central
+        # fraction of the frame even when the camera is clamped at map edges.
+        self._player_center_box_ratio = 0.6
+
     def load_brawler_ranges(self, brawlers_info=None):
         if not brawlers_info:
             brawlers_info = load_brawlers_info()
@@ -828,10 +852,98 @@ class Play(Movement):
         # Nothing clear found — return desired anyway (better than stopping)
         return desired_angle
 
+    def reconcile_players(self, data, frame):
+        """Enforce at-most-one player per frame.
+
+        Selection rules:
+          * Fresh anchor + candidate within accept_radius -> accept, update anchor.
+          * Fresh anchor + all candidates farther than accept_radius but
+            closest is still within max_jump -> reject this frame (likely a
+            mislabelled enemy near us); keep the anchor, push all to enemy.
+          * Fresh anchor + closest candidate farther than max_jump -> anchor
+            is wrong/stale, drop it and re-acquire via the center fallback.
+          * No fresh anchor -> accept only a candidate inside the central
+            box (camera clamp-safe). Others get reassigned to enemy.
+        """
+        players = data.get('player') or []
+        if not players:
+            if time.time() - self._player_anchor_time > self._player_anchor_stale_sec:
+                self._player_anchor_pos = None
+            return data
+
+        h, w = frame.shape[:2]
+        cx, cy = w / 2.0, h / 2.0
+        half_w = w * self._player_center_box_ratio / 2.0
+        half_h = h * self._player_center_box_ratio / 2.0
+
+        def box_center(b):
+            return (b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0
+
+        def in_center(b):
+            bx, by = box_center(b)
+            return abs(bx - cx) <= half_w and abs(by - cy) <= half_h
+
+        anchor_fresh = (
+            self._player_anchor_pos is not None
+            and time.time() - self._player_anchor_time <= self._player_anchor_stale_sec
+        )
+
+        chosen = None
+
+        if anchor_fresh:
+            ax, ay = self._player_anchor_pos
+            ranked = sorted(players,
+                            key=lambda b: math.hypot(box_center(b)[0] - ax,
+                                                     box_center(b)[1] - ay))
+            best = ranked[0]
+            best_dist = math.hypot(box_center(best)[0] - ax, box_center(best)[1] - ay)
+
+            if best_dist <= self._player_accept_radius_px:
+                chosen = best
+            elif best_dist > self._player_max_jump_px:
+                # Anchor is stale/wrong — drop it and fall through to center
+                # fallback below.
+                self._player_anchor_pos = None
+                anchor_fresh = False
+            # else: in the gap between accept_radius and max_jump.
+            # Probably a mislabelled enemy standing near us. Reject all
+            # candidates this frame but keep the anchor alive.
+
+        if chosen is None and not anchor_fresh:
+            # Start-of-match / re-acquire: enemies aren't on screen yet when
+            # the match opens, so a single candidate is always our player —
+            # accept it even if the camera is clamped and the box is far
+            # from the frame center. With multiple candidates we fall back
+            # to the central-box heuristic to filter out mislabels.
+            if len(players) == 1:
+                chosen = players[0]
+            else:
+                central = [b for b in players if in_center(b)]
+                if central:
+                    chosen = min(central,
+                                 key=lambda b: math.hypot(box_center(b)[0] - cx,
+                                                           box_center(b)[1] - cy))
+
+        extras = [b for b in players if b is not chosen] if chosen is not None else list(players)
+
+        if extras:
+            if data.get('enemy') is None:
+                data['enemy'] = []
+            data['enemy'].extend(extras)
+
+        if chosen is None:
+            data['player'] = []
+            return data
+
+        data['player'] = [chosen]
+        self._player_anchor_pos = box_center(chosen)
+        self._player_anchor_time = time.time()
+        return data
+
     @staticmethod
     def validate_game_data(data):
         incomplete = False
-        if "player" not in data.keys():
+        if not data.get("player"):
             incomplete = True  # This is required so track_no_detections can also keep track if enemy is missing
 
         if "enemy" not in data.keys():
@@ -1123,6 +1235,7 @@ class Play(Movement):
             data['wall'] = self.last_walls_data
 
 
+        data = self.reconcile_players(data, frame)
         data = self.validate_game_data(data)
         self.track_no_detections(data)
         if data:
